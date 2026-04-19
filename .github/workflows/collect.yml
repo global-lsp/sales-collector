@@ -1,4 +1,12 @@
-name: 매일 매출 수집
+- name: 매출 수집 실행
+        env:
+          SUPABASE_URL:    ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY:    ${{ secrets.SUPABASE_KEY }}
+          QOO10_23Y_KEY:   ${{ secrets.QOO10_23Y_KEY }}
+          QOO10_23Y_PASS:  ${{ secrets.QOO10_23Y_PASS }}
+          QOO10_OWM_KEY:   ${{ secrets.QOO10_OWM_KEY }}
+          QOO10_OWM_PASS:  ${{ secrets.QOO10_OWM_PASS }}
+        run: python collect.py
 
 on:
   schedule:
