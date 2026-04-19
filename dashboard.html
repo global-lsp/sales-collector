@@ -52,7 +52,7 @@ body{font-family:sans-serif;background:#f5f6f8;padding:20px}
 <script>
 
 const SUPABASE_URL = 'https://eongxuwwajldubammbvx.supabase.co';
-const SUPABASE_KEY = 'YOUR_KEY';
+const SUPABASE_KEY = '여기_기존_키_그대로_넣기';
 
 const FX_FIXED = 9.4;
 let FX_REAL = 9.4;
@@ -68,13 +68,16 @@ async function getFx(){
 }
 
 async function sb(table, query=''){
-  const res = await fetch(`${SUPABASE_URL}/rest/v1/${table}?${query}`,{
+  const res = await fetch(`${SUPABASE_URL}/rest/v1/${table}?select=*&${query}`,{
     headers:{
       apikey:SUPABASE_KEY,
       Authorization:`Bearer ${SUPABASE_KEY}`
     }
   });
-  if(!res.ok) throw new Error(table);
+  if(!res.ok){
+    const txt = await res.text();
+    throw new Error(txt);
+  }
   return res.json();
 }
 
@@ -93,28 +96,29 @@ async function loadAll(){
   const y = document.getElementById('year').value;
   const m = document.getElementById('month').value;
 
-  let q = `yy=eq.${y}`;
-  if(m) q += `&mm=eq.${m}`;
+  let f = `yy=eq.${y}`;
+  if(m) f += `&mm=eq.${m}`;
 
   const [q23,owm,amz,rak] = await Promise.all([
-    sb('qoo10_23y',q),
-    sb('qoo10_owm',q),
-    sb('amazon',q),
-    sb('rakuten',q)
+    sb('qoo10_23y',f),
+    sb('qoo10_owm',f),
+    sb('amazon',f),
+    sb('rakuten',f)
   ]);
 
-  const sales =
-    sum(q23.filter(r=>r.reason==='주문'),'sales') +
-    sum(owm.filter(r=>r.reason==='주문'),'sales') +
-    sum(amz.filter(r=>r.order_status!=='Cancelled'),'sales') +
-    sum(rak.filter(r=>!['800','900'].includes(String(r.status))),'sales');
+  const q = sum(q23.filter(r=>r.reason==='주문'),'sales');
+  const o = sum(owm.filter(r=>r.reason==='주문'),'sales');
+  const a = sum(amz.filter(r=>r.order_status!=='Cancelled'),'sales');
+  const r = sum(rak.filter(r=>!['800','900'].includes(String(r.status))),'sales');
 
-  document.getElementById('total').innerText = '¥ '+fm(sales);
+  const total = q+o+a+r;
+
+  document.getElementById('total').innerText = '¥ '+fm(total);
 
   document.getElementById('krw').innerText =
-    '₩ '+fm(sales*FX_FIXED)+' (고정) / ₩ '+fm(sales*FX_REAL)+' (실시간)';
+    '₩ '+fm(total*FX_FIXED)+' (고정) / ₩ '+fm(total*FX_REAL)+' (실시간)';
 
-  renderDailyChart(q23,owm,amz,rak);
+  renderChart(q23,owm,amz,rak);
 }
 
 async function loadByDate(){
@@ -124,11 +128,15 @@ async function loadByDate(){
   const date = document.getElementById('date').value;
   if(!date) return alert('날짜 선택');
 
+  const [y,m,d] = date.split('-');
+
+  const f = `yy=eq.${y}&mm=eq.${parseInt(m)}&dd=eq.${parseInt(d)}`;
+
   const [q23,owm,amz,rak] = await Promise.all([
-    sb('qoo10_23y',`order_date=eq.${date}`),
-    sb('qoo10_owm',`order_date=eq.${date}`),
-    sb('amazon',`order_date=eq.${date}`),
-    sb('rakuten',`order_date=eq.${date}`)
+    sb('qoo10_23y',f),
+    sb('qoo10_owm',f),
+    sb('amazon',f),
+    sb('rakuten',f)
   ]);
 
   const tQ = sum(q23.filter(r=>r.reason==='주문'),'sales');
@@ -152,15 +160,15 @@ Rakuten: ¥${fm(tR)}`
   );
 }
 
-function renderDailyChart(q23,owm,amz,rak){
+function renderChart(q23,owm,amz,rak){
 
   const map={};
 
   function add(rows,filter){
     rows.filter(filter).forEach(r=>{
-      const d = `${r.yy}-${r.mm}-${r.dd}`;
-      if(!map[d]) map[d]=0;
-      map[d]+=r.sales||0;
+      const key = `${r.yy}-${r.mm}-${r.dd}`;
+      if(!map[key]) map[key]=0;
+      map[key]+=r.sales||0;
     });
   }
 
