@@ -58,7 +58,7 @@ def get_selling_report(sak, date_str):
         "returnType":      "application/json",
         "SearchStartDate": date_str,
         "SearchEndDate":   date_str,
-        "SearchCondition": "2",
+        "SearchCondition": "1",
     }, timeout=30)
     r.raise_for_status()
     data = r.json()
