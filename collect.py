@@ -1,91 +1,133 @@
 import os
 import requests
+import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta
 from supabase import create_client
 
-SUPABASE_URL = os.environ["SUPABASE_URL"]
-SUPABASE_KEY = os.environ["SUPABASE_KEY"]
-QOO10_23Y_KEY = os.environ["QOO10_23Y_KEY"]
-QOO10_OWM_KEY = os.environ["QOO10_OWM_KEY"]
+SUPABASE_URL  = os.environ["SUPABASE_URL"]
+SUPABASE_KEY  = os.environ["SUPABASE_KEY"]
 
-QOO10_API = "https://api.qoo10.jp/GMKT.INC.Front.BizAPI/Giosis.svc/sOpen/json"
+QOO10_API = "https://api.qoo10.jp/GMKT.INC.Front.QAPIService/ebayjapan.qapi"
+
+ACCOUNTS = [
+    {
+        "table":    "qoo10_23y",
+        "user_id":  "23yearsold",
+        "password": os.environ["QOO10_23Y_PASS"],
+        "api_key":  os.environ["QOO10_23Y_KEY"],
+    },
+    {
+        "table":    "qoo10_owm",
+        "user_id":  "owm_official",
+        "password": os.environ["QOO10_OWM_PASS"],
+        "api_key":  os.environ["QOO10_OWM_KEY"],
+    },
+]
 
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-def parse_num(v):
-    try: return float(str(v).replace(',','').strip())
+
+def get_sak(user_id, password, api_key):
+    url = f"{QOO10_API}/CertificationAPI.CreateCertificationKey"
+    headers = {
+        "Content-Type": "application/x-www-form-urlencoded",
+        "GiosisCertificationKey": api_key,
+        "QAPIVersion": "1.0",
+    }
+    r = requests.post(url, headers=headers, data={
+        "returnType": "text/xml",
+        "user_id": user_id,
+        "pwd": password,
+    }, timeout=30)
+    r.raise_for_status()
+    root = ET.fromstring(r.text)
+    msg = root.find("ResultMsg").text
+    sak = root.find("ResultObject").text
+    print(f"  SAK 발급: {msg}")
+    return sak
+
+
+def get_selling_report(sak, date_str):
+    url = f"{QOO10_API}/ShippingBasic.GetSellingReportDetailList"
+    headers = {
+        "Content-Type": "application/x-www-form-urlencoded",
+        "GiosisCertificationKey": sak,
+        "QAPIVersion": "1.0",
+    }
+    r = requests.post(url, headers=headers, data={
+        "returnType":      "application/json",
+        "SearchStartDate": date_str,
+        "SearchEndDate":   date_str,
+        "SearchCondition": "2",
+    }, timeout=30)
+    r.raise_for_status()
+    data = r.json()
+    return data.get("ResultObject") or []
+
+
+def pn(v):
+    try: return float(str(v).replace(",", "").strip())
     except: return None
 
-def parse_int(v):
-    n = parse_num(v)
+def pi(v):
+    n = pn(v)
     return int(n) if n is not None else None
 
-def qoo10_get(api_key, method, extra={}):
-    params = {"v":"1.0","method":method,"key":api_key,"returnType":"json"}
-    params.update(extra)
-    r = requests.get(QOO10_API, params=params, timeout=30)
-    r.raise_for_status()
-    return r.json()
 
-def fetch_qoo10(api_key, date_str):
-    rows = []
-    page = 1
-    while True:
-        data = qoo10_get(api_key, "ShippingBasic.GetShippingInfoListEx", {
-            "start_date": date_str,
-            "end_date":   date_str,
-            "search_type":"1",
-            "page_no":    str(page),
-            "page_size":  "100",
-        })
-        result = data.get("ResultObject", [])
-        if not result: break
-        rows.extend(result)
-        if len(result) < 100: break
-        page += 1
-    return rows
-
-def transform_qoo10(row, yy, mm, dd, reason="주문"):
+def transform(row, yy, mm, dd):
     return {
         "yy":           yy,
         "mm":           mm,
         "dd":           dd,
         "order_date":   f"{yy:04d}-{mm:02d}-{dd:02d}",
-        "reason":       reason,
-        "order_no":     str(row.get("order_no") or row.get("ORDER_NO","")).strip(),
-        "sales":        parse_num(row.get("settlement_price") or row.get("goods_price") or row.get("GOODS_PRICE")),
-        "fee":          parse_num(row.get("fees") or row.get("FEES")),
-        "qty":          parse_int(row.get("ord_qty") or row.get("ORD_QTY") or 1),
-        "sku":          str(row.get("seller_code") or row.get("SELLER_CODE","")).strip(),
-        "product_name": str(row.get("goods_name") or row.get("GOODS_NAME",""))[:100],
-        "ad_source":    str(row.get("ad_type") or row.get("AD_TYPE") or "").strip() or None,
+        "reason":       str(row.get("OrderStatus") or row.get("Reason") or "주문"),
+        "order_no":     str(row.get("OrderNo") or row.get("PackNo") or ""),
+        "sales":        pn(row.get("GoodsPrice") or row.get("SettlementPrice") or row.get("PaymentPrice")),
+        "fee":          pn(row.get("Fees") or row.get("CommissionFee") or row.get("ServiceFee")),
+        "qty":          pi(row.get("OrderQty") or row.get("Qty") or 1),
+        "sku":          str(row.get("SellerCode") or row.get("SellerItemCode") or ""),
+        "product_name": str(row.get("GoodsName") or row.get("ItemTitle") or "")[:100],
+        "ad_source":    str(row.get("AdType") or row.get("ExternalAd") or "") or None,
     }
 
-def collect(table, api_key, target_date):
-    dt = datetime.strptime(target_date, "%Y-%m-%d")
+
+def collect(account, target_date):
+    table = account["table"]
+    dt    = datetime.strptime(target_date, "%Y-%m-%d")
     yy, mm, dd = dt.year, dt.month, dt.day
     date_str = dt.strftime("%Y%m%d")
 
-    print(f"[{table}] {target_date} 수집 중...")
+    print(f"\n[{table}] {target_date} 수집 중...")
+
     try:
-        raw = fetch_qoo10(api_key, date_str)
+        sak = get_sak(account["user_id"], account["password"], account["api_key"])
     except Exception as e:
-        print(f"  API 실패: {e}")
-        return
+        print(f"  SAK 발급 실패: {e}")
+        return 0
 
+    try:
+        raw = get_selling_report(sak, date_str)
+    except Exception as e:
+        print(f"  조회 실패: {e}")
+        return 0
+
+    print(f"  조회: {len(raw)}건")
     if not raw:
-        print(f"  데이터 없음")
-        return
+        print("  데이터 없음")
+        return 0
 
-    rows = [transform_qoo10(r, yy, mm, dd) for r in raw]
-    supabase.table(table).delete().eq("yy",yy).eq("mm",mm).eq("dd",dd).execute()
+    rows = [transform(r, yy, mm, dd) for r in raw]
+
+    supabase.table(table).delete().eq("yy", yy).eq("mm", mm).eq("dd", dd).execute()
     for i in range(0, len(rows), 500):
         supabase.table(table).insert(rows[i:i+500]).execute()
-    print(f"  완료: {len(rows)}건")
+
+    print(f"  업로드 완료: {len(rows)}건")
+    return len(rows)
+
 
 if __name__ == "__main__":
     target = (datetime.today() - timedelta(days=1)).strftime("%Y-%m-%d")
     print(f"수집 날짜: {target}")
-    collect("qoo10_23y", QOO10_23Y_KEY, target)
-    collect("qoo10_owm", QOO10_OWM_KEY, target)
-    print("전체 완료")
+    total = sum(collect(a, target) for a in ACCOUNTS)
+    print(f"\n전체 완료: {total}건")
