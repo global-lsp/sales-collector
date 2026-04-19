@@ -62,7 +62,10 @@ def get_selling_report(sak, date_str):
     }, timeout=30)
     r.raise_for_status()
     data = r.json()
-    return data.get("ResultObject") or []
+    result = data.get("ResultObject") or []
+    if isinstance(result, dict):
+        result = [result]
+    return result if isinstance(result, list) else []
 
 
 def pn(v):
@@ -123,11 +126,4 @@ def collect(account, target_date):
         supabase.table(table).insert(rows[i:i+500]).execute()
 
     print(f"  업로드 완료: {len(rows)}건")
-    return len(rows)
-
-
-if __name__ == "__main__":
-    target = (datetime.today() - timedelta(days=1)).strftime("%Y-%m-%d")
-    print(f"수집 날짜: {target}")
-    total = sum(collect(a, target) for a in ACCOUNTS)
-    print(f"\n전체 완료: {total}건")
+    return len(row
