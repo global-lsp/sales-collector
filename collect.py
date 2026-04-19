@@ -4,8 +4,8 @@ import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta
 from supabase import create_client
 
-SUPABASE_URL  = os.environ["SUPABASE_URL"]
-SUPABASE_KEY  = os.environ["SUPABASE_KEY"]
+SUPABASE_URL = os.environ["SUPABASE_URL"]
+SUPABASE_KEY = os.environ["SUPABASE_KEY"]
 
 QOO10_API = "https://api.qoo10.jp/GMKT.INC.Front.QAPIService/ebayjapan.qapi"
 
@@ -69,8 +69,11 @@ def get_selling_report(sak, date_str):
 
 
 def pn(v):
-    try: return float(str(v).replace(",", "").strip())
-    except: return None
+    try:
+        return float(str(v).replace(",", "").strip())
+    except:
+        return None
+
 
 def pi(v):
     n = pn(v)
@@ -96,7 +99,7 @@ def transform(row, yy, mm, dd):
 
 def collect(account, target_date):
     table = account["table"]
-    dt    = datetime.strptime(target_date, "%Y-%m-%d")
+    dt = datetime.strptime(target_date, "%Y-%m-%d")
     yy, mm, dd = dt.year, dt.month, dt.day
     date_str = dt.strftime("%Y%m%d")
 
@@ -126,4 +129,11 @@ def collect(account, target_date):
         supabase.table(table).insert(rows[i:i+500]).execute()
 
     print(f"  업로드 완료: {len(rows)}건")
-    return len(row
+    return len(rows)
+
+
+if __name__ == "__main__":
+    target = (datetime.today() - timedelta(days=1)).strftime("%Y-%m-%d")
+    print(f"수집 날짜: {target}")
+    total = sum(collect(a, target) for a in ACCOUNTS)
+    print(f"\n전체 완료: {total}건")
