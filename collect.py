@@ -37,7 +37,7 @@ SHEETS = [
      "url": "https://docs.google.com/spreadsheets/d/1n3CYEUpwwASWgijGONz9eN4-kdfW_58U2VGZ3w3cW3E/edit", "tab": "Raw"},
     # 라쿠텐
     {"table": "rakuten", "platform": "rakuten", "quarter": None,
-     "url": "https://docs.google.com/spreadsheets/d/1fE09ZdwSJMhrDGwBe_8vAT5NUDbVF7FuTuEd_X91Qd8/edit", "tab": "Raw"},
+     "url": "https://docs.google.com/spreadsheets/d/1b6orD6pvenMc3cdN2q3kzGIO0INOsAq8L3zNePqyU_s/edit", "tab": "Raw"},
 ]
 
 # ============================================================
@@ -80,7 +80,8 @@ def transform_qoo10(row):
 
 
 def transform_amazon(row):
-    yy = pi(row.get("") or row.get("YY"))
+    # A열 헤더가 없어서 빈 문자열 키로 저장됨
+    yy = pi(row.get("") or row.get("YY") or row.get(" "))
     mm = pi(row.get("MM"))
     dd = pi(row.get("DD"))
     if not yy or not mm or not dd:
@@ -167,7 +168,6 @@ def process_sheet(cfg):
     if not rows:
         return 0
 
-    # 해당 연도/월 삭제 후 재삽입 (중복 방지)
     years  = set(r["yy"] for r in rows)
     months = set(r["mm"] for r in rows)
     for yy in years:
