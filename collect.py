@@ -1,142 +1,220 @@
 import os
-import requests
-import xml.etree.ElementTree as ET
+import json
+import gspread
 from datetime import datetime, timedelta
+from google.oauth2.service_account import Credentials
 from supabase import create_client
 
 SUPABASE_URL = os.environ["SUPABASE_URL"]
 SUPABASE_KEY = os.environ["SUPABASE_KEY"]
-
-QOO10_API = "https://api.qoo10.jp/GMKT.INC.Front.QAPIService/ebayjapan.qapi"
-
-ACCOUNTS = [
-    {
-        "table":    "qoo10_23y",
-        "user_id":  "23yearsold",
-        "password": os.environ["QOO10_23Y_PASS"],
-        "api_key":  os.environ["QOO10_23Y_KEY"],
-    },
-    {
-        "table":    "qoo10_owm",
-        "user_id":  "owm_official",
-        "password": os.environ["QOO10_OWM_PASS"],
-        "api_key":  os.environ["QOO10_OWM_KEY"],
-    },
-]
+SA_JSON      = os.environ["GOOGLE_SERVICE_ACCOUNT"]
 
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
+# Google Sheets API 인증
+creds = Credentials.from_service_account_info(
+    json.loads(SA_JSON),
+    scopes=["https://www.googleapis.com/auth/spreadsheets.readonly"]
+)
+gc = gspread.authorize(creds)
 
-def get_sak(user_id, password, api_key):
-    url = f"{QOO10_API}/CertificationAPI.CreateCertificationKey"
-    headers = {
-        "Content-Type": "application/x-www-form-urlencoded",
-        "GiosisCertificationKey": api_key,
-        "QAPIVersion": "1.0",
-    }
-    r = requests.post(url, headers=headers, data={
-        "returnType": "text/xml",
-        "user_id": user_id,
-        "pwd": password,
-    }, timeout=30)
-    r.raise_for_status()
-    root = ET.fromstring(r.text)
-    msg = root.find("ResultMsg").text
-    sak = root.find("ResultObject").text
-    print(f"  SAK 발급: {msg}")
-    return sak
+# ============================================================
+# 시트 설정
+# ============================================================
+SHEETS = [
+    # 큐텐 23Y (분기별 4개, Raw 탭)
+    {
+        "table":    "qoo10_23y",
+        "platform": "qoo10_23y",
+        "url":      "https://docs.google.com/spreadsheets/d/14-EG7ckGOyDDBFdZxTlaWaVEJyXTovUhQXZrgzDeE5g/edit",
+        "tab":      "Raw",
+        "quarter":  "1Q",
+    },
+    {
+        "table":    "qoo10_23y",
+        "platform": "qoo10_23y",
+        "url":      "https://docs.google.com/spreadsheets/d/1YR2NZu9uRv9TLZHynl-FTkEcnqdguqcnVrP5o5nU1lI/edit",
+        "tab":      "Raw",
+        "quarter":  "2Q",
+    },
+    {
+        "table":    "qoo10_23y",
+        "platform": "qoo10_23y",
+        "url":      "https://docs.google.com/spreadsheets/d/1mODnIP5qKPwfXPilCuUfHwVP1ztvnQ2gMH_O4-6nvYU/edit",
+        "tab":      "Raw",
+        "quarter":  "3Q",
+    },
+    {
+        "table":    "qoo10_23y",
+        "platform": "qoo10_23y",
+        "url":      "https://docs.google.com/spreadsheets/d/1l31uprUNXkwjf5qhiFs4bbDVrpz6eWfS-MN5pVilXkE/edit",
+        "tab":      "Raw",
+        "quarter":  "4Q",
+    },
+    # 아마존 JP
+    {
+        "table":    "amazon",
+        "platform": "amazon_jp",
+        "url":      "https://docs.google.com/spreadsheets/d/1n3CYEUpwwASWgijGONz9eN4-kdfW_58U2VGZ3w3cW3E/edit",
+        "tab":      "Raw",
+        "quarter":  None,
+    },
+    # 라쿠텐
+    {
+        "table":    "rakuten",
+        "platform": "rakuten",
+        "url":      "https://docs.google.com/spreadsheets/d/1fE09ZdwSJMhrDGwBe_8vAT5NUDbVF7FuTuEd_X91Qd8/edit",
+        "tab":      "Raw",
+        "quarter":  None,
+    },
+]
 
-
-def get_selling_report(sak, date_str):
-    url = f"{QOO10_API}/ShippingBasic.GetSellingReportDetailList"
-    headers = {
-        "Content-Type": "application/x-www-form-urlencoded",
-        "GiosisCertificationKey": sak,
-        "QAPIVersion": "1.0",
-    }
-    r = requests.post(url, headers=headers, data={
-        "returnType":      "application/json",
-        "SearchStartDate": date_str,
-        "SearchEndDate":   date_str,
-        "SearchCondition": "1",
-    }, timeout=30)
-    r.raise_for_status()
-    data = r.json()
-
-    # 응답이 [[주문리스트], [취소리스트]] 구조
-    rows = []
-    if isinstance(data, list):
-        for group in data:
-            if isinstance(group, list):
-                for item in group:
-                    if isinstance(item, list):
-                        for row in item:
-                            if isinstance(row, dict):
-                                rows.append(row)
-                    elif isinstance(item, dict):
-                        rows.append(item)
-
-    print(f"  파싱된 행수: {len(rows)}")
-    if rows:
-        print(f"  첫 번째 행 키: {list(rows[0].keys())[:10]}")
-    return rows
-
-
+# ============================================================
+# 유틸
+# ============================================================
 def pn(v):
-    try:
-        return float(str(v).replace(",", "").strip())
-    except:
-        return None
-
+    try: return float(str(v).replace(",", "").replace("¥", "").strip())
+    except: return None
 
 def pi(v):
     n = pn(v)
     return int(n) if n is not None else None
 
 
-def transform(row, yy, mm, dd):
+# ============================================================
+# 큐텐 변환
+# ============================================================
+def transform_qoo10(row):
+    yy = pi(row.get("YY"))
+    mm = pi(row.get("MM"))
+    dd = pi(row.get("DD"))
+    if not yy or not mm or not dd:
+        return None
+    reason = str(row.get("발생사유", "")).strip()
+    if reason not in ("주문", "취소"):
+        return None
     return {
         "yy":           yy,
         "mm":           mm,
         "dd":           dd,
         "order_date":   f"{yy:04d}-{mm:02d}-{dd:02d}",
-        "reason":       str(row.get("OrderStatus") or row.get("Reason") or row.get("order_status") or "주문"),
-        "order_no":     str(row.get("OrderNo") or row.get("PackNo") or row.get("order_no") or ""),
-        "sales":        pn(row.get("GoodsPrice") or row.get("SettlementPrice") or row.get("PaymentPrice") or row.get("goods_price")),
-        "fee":          pn(row.get("Fees") or row.get("CommissionFee") or row.get("ServiceFee") or row.get("fees")),
-        "qty":          pi(row.get("OrderQty") or row.get("Qty") or row.get("order_qty") or 1),
-        "sku":          str(row.get("SellerCode") or row.get("SellerItemCode") or row.get("seller_code") or ""),
-        "product_name": str(row.get("GoodsName") or row.get("ItemTitle") or row.get("goods_name") or "")[:100],
-        "ad_source":    str(row.get("AdType") or row.get("ExternalAd") or row.get("ad_type") or "") or None,
+        "reason":       reason,
+        "order_no":     str(row.get("주문번호", "") or ""),
+        "sales":        pn(row.get("상품결제금")),
+        "fee":          pn(row.get("Qoo10서비스수수료")),
+        "qty":          pi(row.get("수량") or 1),
+        "sku":          str(row.get("판매자코드", "") or ""),
+        "product_name": str(row.get("상품명", "") or "")[:100],
+        "ad_source":    str(row.get("외부광고", "") or "") or None,
     }
 
 
-def collect(account, target_date):
-    table = account["table"]
-    dt = datetime.strptime(target_date, "%Y-%m-%d")
-    yy, mm, dd = dt.year, dt.month, dt.day
-    date_str = dt.strftime("%Y%m%d")
+# ============================================================
+# 아마존 변환
+# ============================================================
+def transform_amazon(row):
+    yy = pi(row.get("") or row.get("YY"))
+    mm = pi(row.get("MM"))
+    dd = pi(row.get("DD"))
+    if not yy or not mm or not dd:
+        return None
+    status = str(row.get("order-status", "") or "").strip()
+    if not status:
+        return None
+    return {
+        "yy":           yy,
+        "mm":           mm,
+        "dd":           dd,
+        "order_date":   f"{yy:04d}-{mm:02d}-{dd:02d}",
+        "order_status": status,
+        "order_id":     str(row.get("amazon-order-id", "") or ""),
+        "sales":        pn(row.get("item-price")) if status != "Cancelled" else 0,
+        "qty":          pi(row.get("quantity") or 1),
+        "sku":          str(row.get("sku", "") or ""),
+        "product_name": str(row.get("product-name", "") or "")[:100],
+        "fba":          pn(row.get("FBA")),
+        "krjp":         pn(row.get("KR-JP")),
+        "label_cost":   pn(row.get("라벨비용")),
+        "import_tax":   pn(row.get("수입소비세")),
+    }
 
-    print(f"\n[{table}] {target_date} 수집 중...")
+
+# ============================================================
+# 라쿠텐 변환
+# ============================================================
+def transform_rakuten(row):
+    yy = pi(row.get("YY"))
+    mm = pi(row.get("MM"))
+    dd = pi(row.get("DD"))
+    if not yy or not mm or not dd:
+        return None
+    status = str(row.get("상태", "") or "").strip()
+    if not status:
+        return None
+    return {
+        "yy":           yy,
+        "mm":           mm,
+        "dd":           dd,
+        "order_date":   f"{yy:04d}-{mm:02d}-{dd:02d}",
+        "status":       status,
+        "order_no":     str(row.get("주문번호", "") or ""),
+        "sales":        pn(row.get("총 결제금액")),
+        "qty":          pi(row.get("갯수") or 1),
+        "sku":          str(row.get("시스템 연계용 SKu 번호", "") or row.get("상품코드", "") or ""),
+        "product_name": str(row.get("상품명", "") or "")[:100],
+        "cogs":         pn(row.get("원가(엔)")),
+        "shipping":     pn(row.get("배송비")),
+    }
+
+
+TRANSFORMERS = {
+    "qoo10_23y": transform_qoo10,
+    "amazon_jp":  transform_amazon,
+    "rakuten":   transform_rakuten,
+}
+
+
+# ============================================================
+# 시트 읽기 → Supabase 업로드
+# ============================================================
+def process_sheet(sheet_config):
+    table    = sheet_config["table"]
+    platform = sheet_config["platform"]
+    url      = sheet_config["url"]
+    tab      = sheet_config["tab"]
+    quarter  = sheet_config.get("quarter")
+
+    label = f"{table} {quarter or ''}"
+    print(f"\n[{label}] 읽는 중...")
 
     try:
-        sak = get_sak(account["user_id"], account["password"], account["api_key"])
+        sh = gc.open_by_url(url)
+        ws = sh.worksheet(tab)
+        records = ws.get_all_records()
+        print(f"  읽은 행수: {len(records)}")
     except Exception as e:
-        print(f"  SAK 발급 실패: {e}")
+        print(f"  시트 읽기 실패: {e}")
         return 0
 
-    try:
-        raw = get_selling_report(sak, date_str)
-    except Exception as e:
-        print(f"  조회 실패: {e}")
+    transform = TRANSFORMERS[platform]
+    rows = []
+    for r in records:
+        transformed = transform(r)
+        if transformed:
+            rows.append(transformed)
+
+    print(f"  변환된 행수: {len(rows)}")
+    if not rows:
         return 0
 
-    if not raw:
-        print("  데이터 없음 (해당 날짜 판매 없음)")
-        return 0
+    # 연도/월 범위 파악해서 해당 범위만 삭제 후 재삽입
+    years  = set(r["yy"] for r in rows)
+    months = set(r["mm"] for r in rows)
 
-    rows = [transform(r, yy, mm, dd) for r in raw]
-    supabase.table(table).delete().eq("yy", yy).eq("mm", mm).eq("dd", dd).execute()
+    for yy in years:
+        for mm in months:
+            supabase.table(table).delete().eq("yy", yy).eq("mm", mm).execute()
+
     for i in range(0, len(rows), 500):
         supabase.table(table).insert(rows[i:i+500]).execute()
 
@@ -144,8 +222,12 @@ def collect(account, target_date):
     return len(rows)
 
 
+# ============================================================
+# 메인
+# ============================================================
 if __name__ == "__main__":
-    target = (datetime.today() - timedelta(days=1)).strftime("%Y-%m-%d")
-    print(f"수집 날짜: {target}")
-    total = sum(collect(a, target) for a in ACCOUNTS)
+    print("구글 시트 → Supabase 동기화 시작")
+    total = 0
+    for sheet in SHEETS:
+        total += process_sheet(sheet)
     print(f"\n전체 완료: {total}건")
